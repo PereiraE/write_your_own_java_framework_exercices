@@ -1,5 +1,7 @@
 package com.github.forax.framework.mapper;
 
+import java.beans.IntrospectionException;
+import java.beans.PropertyDescriptor;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -16,39 +18,45 @@ public final class JSONWriter {
   }
 
   private static final ClassValue<List<Generator>> PROPERTIES_CLASS_VALUE = new ClassValue<>() {
-    @Override
-    protected List<Generator> computeValue(Class<?> type) {
-      if (type.isRecord()) {
-        return computeRecord(type);
-      }
-      return computeBean(type);
-    }
 
-    private List<Generator> computeRecord(Class<?> record) {
-      var components = record.getRecordComponents();
-      return Arrays.stream(components)
-          .<Generator>map(component -> {
-            var getter = component.getAccessor();
-            var key = computeKeyName(getter, component.getName());
-            return (writer, instance) ->  key + writer.toJSON(Utils.invokeMethod(instance, getter));
-          })
-          .toList();
-    }
-
-    private List<Generator> computeBean(Class<?> bean) {
-      var beanInfo = Utils.beanInfo(bean);
+    private static List<PropertyDescriptor> beanProperties(Class<?> type) {
+      var beanInfo = Utils.beanInfo(type);
       var properties = beanInfo.getPropertyDescriptors();
       return Arrays.stream(properties)
-          .filter(property -> !property.getName().equals("class"))
-          .<Generator>map(property -> {
-            var getter = property.getReadMethod();
-            var key = computeKeyName(getter, property.getName());
-            return (writer, instance) ->  key + writer.toJSON(Utils.invokeMethod(instance, getter));
-          })
-          .toList();
+              .filter(property -> !property.getName().equals("class"))
+              .toList();
     }
 
-    private String computeKeyName(Method getter, String defaultValue) {
+    private static List<PropertyDescriptor> recordProperties(Class<?> type) {
+      var components = type.getRecordComponents();
+      return Arrays.stream(components).map(component -> {
+        try {
+          return new PropertyDescriptor(component.getName(), component.getAccessor(), null);
+        } catch (IntrospectionException e) {
+          throw new RuntimeException(e);
+        }
+      })
+      .toList();
+    }
+    @Override
+    protected List<Generator> computeValue(Class<?> type) {
+
+      List<PropertyDescriptor> properties;
+      if (type.isRecord()) {
+        properties = recordProperties(type);
+      } else {
+        properties = beanProperties(type);
+      }
+      return properties.stream()
+        .<Generator>map(property -> {
+          var getter = property.getReadMethod();
+          var key = computeKeyName(getter, property.getName());
+          return (writer, instance) ->  key + writer.toJSON(Utils.invokeMethod(instance, getter));
+        })
+        .toList();
+    }
+
+    private static String computeKeyName(Method getter, String defaultValue) {
       String keyName;
       var annotation = getter.getAnnotation(JSONProperty.class);
       if (annotation != null) {
