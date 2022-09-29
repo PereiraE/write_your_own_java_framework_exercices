@@ -1,20 +1,12 @@
 package com.github.forax.framework.mapper;
 
-import java.beans.Beans;
-import java.beans.PropertyDescriptor;
-import java.lang.annotation.Retention;
-import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
-import static java.lang.annotation.ElementType.METHOD;
-import static java.lang.annotation.ElementType.RECORD_COMPONENT;
-import static java.lang.annotation.RetentionPolicy.RUNTIME;
 import static java.util.stream.Collectors.joining;
 
 public final class JSONWriter {
@@ -35,7 +27,6 @@ public final class JSONWriter {
     private List<Generator> computeRecord(Class<?> record) {
       var components = record.getRecordComponents();
       return Arrays.stream(components)
-          .filter(component -> !component.getClass().equals("class"))
           .<Generator>map(component -> {
             var getter = component.getAccessor();
             var key = computeKeyName(getter, component.getName());
