@@ -1,7 +1,13 @@
 package com.github.forax.framework.orm;
 
+import java.beans.BeanInfo;
 import java.beans.PropertyDescriptor;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.sql.ResultSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.StringJoiner;
@@ -14,6 +20,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Stream;
+import jdk.jshell.execution.Util;
 
 public final class ORM {
   private ORM() {
@@ -81,12 +88,13 @@ public final class ORM {
         block.run();
         connection.commit();
       } catch (SQLException | RuntimeException e) {
+        var rootCause = e instanceof UncheckedSQLException unchecked ? unchecked.getCause() : e;
         try {
           connection.rollback();
         } catch (SQLException e2) {
           e.addSuppressed(e2);
         }
-        throw e;
+        throw Utils.rethrow(rootCause);
       } finally {
         CONNECTION_THREAD_LOCAL.remove();
       }
@@ -174,14 +182,51 @@ public final class ORM {
             (proxy, method, args) -> {
               var methodName = method.getName();
               return switch (methodName) {
-                case "findAll" ->  {
-                  currentConnection();
-                  yield List.of();
+                case "findAll" -> {
+                  var connection = currentConnection();
+                  var type = findBeanTypeFromRepository(repositoryType);
+                  var query = "SELECT * FROM " + findTableName(type);
+                  var beanInfo = Utils.beanInfo(type);
+                  var constructor = type.getConstructor();
+                  yield findAll(connection, query, beanInfo, constructor);
                 }
                 case "equals", "toString", "hashCode" -> throw new UnsupportedOperationException();
                 default -> throw new IllegalStateException();
               };
             });
     return repositoryType.cast(repositoryProxy);
+  }
+
+  static<T> T toEntityClass(ResultSet resultSet, BeanInfo beanInfo, Constructor<T> constructor) {
+    var properties = Arrays.stream(beanInfo.getPropertyDescriptors())
+            .filter(descriptor -> !descriptor.getName().equals("class"))
+            .toList();
+    try {
+      var entity = constructor.newInstance();
+      var index = 1;
+      for (var property : properties) {
+        var setter = property.getWriteMethod();
+        Utils.invokeMethod(entity, setter, resultSet.getObject(index));
+        index++;
+      }
+      return constructor.getDeclaringClass().cast(entity);
+    } catch (InstantiationException | InvocationTargetException | IllegalAccessException  e) {
+      throw new RuntimeException(e);
+    } catch (SQLException e) {
+      throw new UncheckedSQLException(e);
+    }
+  }
+
+  static<T> List<T> findAll(Connection connection, String sqlQuery, BeanInfo beanInfo, Constructor<T> constructor) {
+    try(var statement = connection.prepareStatement(sqlQuery)) {
+      var result = statement.executeQuery();
+      var list = new ArrayList<T>();
+      while (result.next()) {
+        list.add(toEntityClass(result, beanInfo, constructor));
+      }
+      return list;
+    } catch (SQLException e) {
+      throw new UncheckedSQLException(e);
+    }
   }
 }

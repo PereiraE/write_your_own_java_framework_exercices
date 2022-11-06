@@ -653,7 +653,7 @@ public class ORMTest {
       assertThrows(NullPointerException.class, () -> ORM.createRepository(null));
     }
   }
-/*
+
   @Nested
   public class Q7 {
 
@@ -764,7 +764,7 @@ public class ORMTest {
       assertThrows(SQLException.class, () -> ORM.transaction(dataSource, repository::findAll));
     }
   }
-
+/*
   @Nested
   class Q8 {
 
