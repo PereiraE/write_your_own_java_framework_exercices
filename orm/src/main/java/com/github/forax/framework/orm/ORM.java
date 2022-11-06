@@ -1,24 +1,18 @@
 package com.github.forax.framework.orm;
 
-import javax.sql.DataSource;
-import java.beans.BeanInfo;
-import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
-import java.io.Serial;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.StringJoiner;
+import javax.sql.DataSource;
+import java.io.Serial;
+import java.lang.reflect.ParameterizedType;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
-import java.util.StringJoiner;
 import java.util.stream.Stream;
 
 public final class ORM {
@@ -74,5 +68,120 @@ public final class ORM {
 
   // --- do not change the code above
 
-  //TODO
+  private static final ThreadLocal<Connection> CONNECTION_THREAD_LOCAL = new ThreadLocal<>();
+
+  public static void transaction(DataSource dataSource, TransactionBlock block) throws SQLException {
+    Objects.requireNonNull(dataSource);
+    Objects.requireNonNull(block);
+
+    try (var connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      CONNECTION_THREAD_LOCAL.set(connection);
+      try {
+        block.run();
+        connection.commit();
+      } catch (SQLException | RuntimeException e) {
+        try {
+          connection.rollback();
+        } catch (SQLException e2) {
+          e.addSuppressed(e2);
+        }
+        throw e;
+      } finally {
+        CONNECTION_THREAD_LOCAL.remove();
+      }
+    }
+  }
+
+  static Connection currentConnection() {
+    var connection = CONNECTION_THREAD_LOCAL.get();
+    if (connection == null) {
+      throw new IllegalStateException("No connection available");
+    }
+    return connection;
+  }
+
+  public static void createTable(Class<?> beanClass) throws SQLException {
+    Objects.requireNonNull(beanClass);
+    var connection = currentConnection();
+    var prefix = "CREATE TABLE " + findTableName(beanClass) + " (";
+    var beanInfo = Utils.beanInfo(beanClass);
+
+    var joiner = new StringJoiner(", ", prefix, ");");
+    var id = (String) null;
+    for (PropertyDescriptor property : beanInfo.getPropertyDescriptors()) {
+      if (property.getName().equals("class")) {
+        continue;
+      }
+      var columnName = findColumnName(property);
+      if (isId(property)) {
+        if (id != null) {
+          throw new IllegalStateException("Multiple ids defined " + id + " " + columnName);
+        }
+        id = columnName;
+      }
+      var line =  columnName + " " + findColumnType(property);
+      joiner.add(line);
+    }
+    if (id != null) {
+      joiner.add("PRIMARY KEY (" + id + ")");
+    }
+    var query = joiner.toString();
+
+    try (var statement = connection.createStatement()) {
+      statement.executeUpdate(query);
+    }
+    connection.commit();
+  }
+
+  static String findTableName(Class<?> beanClass) {
+    var tableAnnotation = beanClass.getAnnotation(Table.class);
+    if(tableAnnotation == null) {
+      return beanClass.getSimpleName().toUpperCase(Locale.ROOT);
+    }
+    return tableAnnotation.value();
+  }
+
+  static String findColumnName(PropertyDescriptor descriptor) {
+    var columnAnnotation = descriptor.getReadMethod().getAnnotation(Column.class);
+    if (columnAnnotation == null) {
+      return descriptor.getName().toUpperCase(Locale.ROOT);
+    }
+    return columnAnnotation.value();
+  }
+
+  private static String findColumnType(PropertyDescriptor descriptor) {
+    var type = descriptor.getPropertyType();
+    var mapping = TYPE_MAPPING.get(type);
+    if (mapping == null) {
+      throw new IllegalStateException("Unknown property type : " + descriptor);
+    }
+    var nullable = type.isPrimitive() ? " NOT NULL": " ";
+    var generatedValue = descriptor.getReadMethod().isAnnotationPresent(GeneratedValue.class);
+    var autoIncrement = generatedValue ? " AUTO_INCREMENT" : " ";
+    return mapping + nullable + autoIncrement;
+  }
+
+  private static boolean isId(PropertyDescriptor descriptor) {
+    return descriptor.getReadMethod().isAnnotationPresent(Id.class);
+  }
+
+  public static<T> T createRepository(Class<T> repositoryType) {
+    Objects.requireNonNull(repositoryType);
+
+    var repositoryProxy = Proxy.newProxyInstance(repositoryType.getClassLoader(),
+            new Class<?>[] {repositoryType},
+            (proxy, method, args) -> {
+              var methodName = method.getName();
+              return switch (methodName) {
+                case "findAll" ->  {
+                  currentConnection();
+                  yield List.of();
+                }
+                case "equals", "toString", "hashCode" -> throw new UnsupportedOperationException();
+                default -> throw new IllegalStateException();
+              };
+            });
+    return repositoryType.cast(repositoryProxy);
+  }
 }
